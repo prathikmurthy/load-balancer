@@ -24,6 +24,17 @@ func main() {
 		})
 	})
 
+	http.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("Recieved Ping Request: %s %s", r.Method, r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"ping": "pong",
+			"port":   *port,
+			"method": r.Method,
+			"path":   r.URL.Path,
+		})
+	})
+	
+
 	log.Printf("backend listening on %s", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatal(err)
