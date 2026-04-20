@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 )
 
 type Response struct {
@@ -14,6 +15,17 @@ type Response struct {
 type BackendServer struct {
 	URL    string
 	client *http.Client
+}
+
+var HBH_HEADERS = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"TE",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
 }
 
 func (bs BackendServer) ForwardRequest(r *http.Request) (*http.Response, error) {
@@ -32,6 +44,16 @@ func (bs BackendServer) ForwardRequest(r *http.Request) (*http.Response, error) 
 	}
 
 	new_req.Header = r.Header.Clone()
+	custom_hbh := strings.Split(r.Header.Get("Connection"), ", ")
+	for _, h := range custom_hbh {
+		new_req.Header.Del(h)
+	}
+
+	for _, h := range HBH_HEADERS {
+		new_req.Header.Del(h)
+	}
+
+	new_req.Header.Add("X-Forwarded-For", r.RemoteAddr)
 
 	return bs.client.Do(new_req)
 }
@@ -72,6 +94,7 @@ func server(backendManager *BackendManager) http.HandlerFunc {
 				w.Header().Add(key, value)
 			}
 		}
+
 		w.WriteHeader(resp.StatusCode)
 
 		defer resp.Body.Close()
