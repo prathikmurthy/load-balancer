@@ -22,9 +22,15 @@ func ping(w http.ResponseWriter, r *http.Request) {
 
 func server(backendManager *BackendManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		resp, err := backendManager.getBackend(r).ForwardRequest(r)
+		server, err := backendManager.getBackend(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		resp, err := server.ForwardRequest(r)
+		if err != nil {
+			http.Error(w, "Error forwarding request to backend", http.StatusBadGateway)
 			return
 		}
 

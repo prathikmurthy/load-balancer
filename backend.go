@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -52,7 +53,7 @@ func HealthCheckLoop(ctx context.Context, bs *Server) {
 			case <-ctx.Done():
 				return
 		}
-		
+
 
 	}
 }
@@ -112,8 +113,16 @@ func (bm *BackendManager) AddBackend(url string) {
 	bm.servers = append(bm.servers, new_server)
 }
 
-func (bm *BackendManager) getBackend(r *http.Request) *Server {
-	idx := bm.current.Add(1) % int32(len(bm.servers))
+func (bm *BackendManager) getBackend(r *http.Request) (*Server, error) {
+	// idx := bm.current.Add(1) % int32(len(bm.servers))
 
-	return bm.servers[idx]
+	for idx := 0; idx < len(bm.servers); idx++ {
+		server := bm.servers[bm.current.Add(1) % int32(len(bm.servers))]
+
+		if server.healthy.Load() {
+			return server, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no healthy backend available")
 }
