@@ -40,6 +40,7 @@ The load balancer exposes an OpenTelemetry metrics endpoint at `http://localhost
 |---|---|---|
 | `total_requests` | Counter | Total requests received by the load balancer |
 | `total_failed_requests` | Counter | Requests that failed to forward or encountered a copy error |
+| `request_duration` | Histogram | Execution time of non-failed requests |
 
 When running with Docker Compose:
 

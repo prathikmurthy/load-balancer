@@ -29,6 +29,7 @@ func ping(w http.ResponseWriter, r *http.Request) {
 
 func server(backendManager *BackendManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		backendManager.instrumentation.totalRequests.Add(r.Context(), 1)
 
 		server, err := backendManager.getBackend(r)
@@ -61,6 +62,8 @@ func server(backendManager *BackendManager) http.HandlerFunc {
 			backendManager.instrumentation.totalFailedRequests.Add(r.Context(), 1)
 			return
 		}
+
+		backendManager.instrumentation.requestDuration.Record(r.Context(), float64(time.Since(start).Milliseconds()))
 
 	}
 }

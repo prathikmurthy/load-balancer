@@ -103,6 +103,7 @@ func (bs *Server) ForwardRequest(r *http.Request) (*http.Response, error) {
 type OTelInstrumentation struct {
 	totalRequests       metric.Int64Counter
 	totalFailedRequests metric.Int64Counter
+	requestDuration     metric.Float64Histogram
 }
 
 func NewOTelInstrumentation() *OTelInstrumentation {
@@ -116,10 +117,19 @@ func NewOTelInstrumentation() *OTelInstrumentation {
 	if err != nil {
 		panic(err)
 	}
+	requestDuration, err := meter.Float64Histogram(
+		"request_duration_ms",
+		metric.WithDescription("Duration of successfully forwarded requests in milliseconds"),
+		metric.WithUnit("ms"),
+	)
+	if err != nil {
+		panic(err)
+	}
 
 	return &OTelInstrumentation{
 		totalRequests:       totalRequests,
 		totalFailedRequests: totalFailedRequests,
+		requestDuration:     requestDuration,
 	}
 }
 
@@ -143,14 +153,14 @@ const (
 func NewBackendManager(ctx context.Context, strategy BackendManagerStrategy) *BackendManager { // constructor
 
 	bm := BackendManager{
-		ctx: ctx,
+		ctx:      ctx,
 		strategy: strategy,
 		hashRing: &ConsistentHashRing{
 			VirtualNodeCount: 5,
 		},
 		instrumentation: NewOTelInstrumentation(),
 	}
-	
+
 	return &bm
 }
 
