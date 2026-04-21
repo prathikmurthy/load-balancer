@@ -3,11 +3,10 @@ package main
 import (
 	"context"
 	"errors"
-	"time"
 
 	"go.opentelemetry.io/otel"
 	// "go.opentelemetry.io/otel/exporters/stdout/stdoutlog"
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
+	"go.opentelemetry.io/otel/exporters/prometheus"
 	// "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	// "go.opentelemetry.io/otel/log/global"
 	// "go.opentelemetry.io/otel/propagation"
@@ -95,15 +94,13 @@ func setupOTelSDK(ctx context.Context) (func(context.Context) error, error) {
 // }
 
 func newMeterProvider() (*metric.MeterProvider, error) {
-	metricExporter, err := stdoutmetric.New(stdoutmetric.WithPrettyPrint())
+	promExporter, err := prometheus.New()
 	if err != nil {
 		return nil, err
 	}
 
 	meterProvider := metric.NewMeterProvider(
-		metric.WithReader(metric.NewPeriodicReader(metricExporter,
-			// Default is 1m. Set to 3s for demonstrative purposes.
-			metric.WithInterval(3*time.Second))),
+		metric.WithReader(promExporter),
 	)
 	return meterProvider, nil
 }

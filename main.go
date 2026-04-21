@@ -11,6 +11,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Response struct {
@@ -64,19 +66,19 @@ func server(backendManager *BackendManager) http.HandlerFunc {
 }
 
 func main() {
-	
+
 	http_server := &http.Server{
 		Addr: ":8080",
 	}
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
+
 	otelShutdown, err := setupOTelSDK(context.Background())
 	if err != nil {
 		log.Fatalf("Failed to set up OpenTelemetry SDK: %v", err)
 	}
-	
+
 	defer func() {
 		otelCtx, otelCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer otelCancel()
@@ -85,9 +87,9 @@ func main() {
 			log.Printf("Error during OpenTelemetry SDK shutdown: %v", otelShutdownErr)
 		}
 	}()
-		
+
 	backendManager := NewBackendManager(ctx, LeastConnections)
-	
+
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, os.Interrupt)
 	go func() {
@@ -100,7 +102,7 @@ func main() {
 		backendManager.Shutdown()
 		os.Exit(0)
 	}()
-		
+
 	flag.Parse()
 	backends := flag.Args()
 
@@ -113,6 +115,7 @@ func main() {
 
 	http.HandleFunc("/ping", ping)
 	http.HandleFunc("/", server(backendManager))
+	http.Handle("/metrics", promhttp.Handler())
 
 	err = http_server.ListenAndServe()
 	if err != nil && err != http.ErrServerClosed {
