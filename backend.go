@@ -10,6 +10,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // hop by hop
@@ -25,17 +28,17 @@ var HBH_HEADERS = []string{
 }
 
 type ConsistentHashRing struct {
-	RingPositions []uint32
-	PositionMap map[uint32]*Server
+	RingPositions    []uint32
+	PositionMap      map[uint32]*Server
 	VirtualNodeCount uint8
 }
 
 type Server struct {
-	URL     string
-	client  *http.Client
-	healthy *atomic.Bool
+	URL         string
+	client      *http.Client
+	healthy     *atomic.Bool
 	connections atomic.Int32
-	drain sync.WaitGroup
+	drain       sync.WaitGroup
 }
 
 func (bs *Server) CheckHealth() bool {
@@ -58,13 +61,11 @@ func HealthCheckLoop(ctx context.Context, bs *Server) {
 		bs.healthy.Store(healthy)
 
 		select {
-			case <- time.After(5 * time.Second):
-	
+		case <-time.After(5 * time.Second):
 
-			case <-ctx.Done():
-				return
+		case <-ctx.Done():
+			return
 		}
-
 
 	}
 }
@@ -99,12 +100,36 @@ func (bs *Server) ForwardRequest(r *http.Request) (*http.Response, error) {
 	return bs.client.Do(new_req)
 }
 
+type OTelInstrumentation struct {
+	totalRequests       metric.Int64Counter
+	totalFailedRequests metric.Int64Counter
+}
+
+func NewOTelInstrumentation() *OTelInstrumentation {
+	meter := otel.GetMeterProvider().Meter("backend_manager")
+
+	totalRequests, err := meter.Int64Counter("total_requests")
+	if err != nil {
+		panic(err)
+	}
+	totalFailedRequests, err := meter.Int64Counter("total_failed_requests")
+	if err != nil {
+		panic(err)
+	}
+
+	return &OTelInstrumentation{
+		totalRequests:       totalRequests,
+		totalFailedRequests: totalFailedRequests,
+	}
+}
+
 type BackendManager struct {
-	servers []*Server
-	current atomic.Int32 // idx for round robin
-	ctx    context.Context
-	strategy BackendManagerStrategy
-	hashRing *ConsistentHashRing
+	servers         []*Server
+	current         atomic.Int32 // idx for round robin
+	ctx             context.Context
+	strategy        BackendManagerStrategy
+	hashRing        *ConsistentHashRing
+	instrumentation *OTelInstrumentation
 }
 
 type BackendManagerStrategy int
@@ -116,13 +141,16 @@ const (
 )
 
 func NewBackendManager(ctx context.Context, strategy BackendManagerStrategy) *BackendManager { // constructor
+
 	bm := BackendManager{
 		ctx: ctx,
 		strategy: strategy,
 		hashRing: &ConsistentHashRing{
 			VirtualNodeCount: 5,
 		},
+		instrumentation: NewOTelInstrumentation(),
 	}
+	
 	return &bm
 }
 
@@ -138,13 +166,13 @@ func (bm *BackendManager) Shutdown() {
 
 func (bm *BackendManager) AddBackend(url string) {
 	new_server := &Server{
-		URL:    url,
-		client: &http.Client{},
+		URL:     url,
+		client:  &http.Client{},
 		healthy: &atomic.Bool{},
 	}
-	
+
 	go HealthCheckLoop(bm.ctx, new_server)
-	
+
 	bm.servers = append(bm.servers, new_server)
 
 	if bm.strategy == ConsistentHash {
@@ -167,66 +195,66 @@ func (bm *BackendManager) getBackend(r *http.Request) (*Server, error) {
 	// idx := bm.current.Add(1) % int32(len(bm.servers))
 
 	switch bm.strategy {
-		case RoundRobin:
-			for idx := 0; idx < len(bm.servers); idx++ {
-				server := bm.servers[bm.current.Add(1) % int32(len(bm.servers))]
-		
-				if server.healthy.Load() {
-					server.connections.Add(1)
-					server.drain.Add(1)
-					return server, nil
+	case RoundRobin:
+		for idx := 0; idx < len(bm.servers); idx++ {
+			server := bm.servers[bm.current.Add(1)%int32(len(bm.servers))]
+
+			if server.healthy.Load() {
+				server.connections.Add(1)
+				server.drain.Add(1)
+				return server, nil
+			}
+		}
+
+		return nil, fmt.Errorf("no healthy backend available")
+
+	case LeastConnections:
+		var least_conn_server *Server
+		for _, server := range bm.servers {
+			if server.healthy.Load() {
+				if least_conn_server == nil || server.connections.Load() < least_conn_server.connections.Load() {
+					least_conn_server = server
 				}
 			}
-		
-			return nil, fmt.Errorf("no healthy backend available")
+		}
 
-		case LeastConnections:
-			var least_conn_server *Server
-			for _, server := range bm.servers {
-				if server.healthy.Load() {
-					if least_conn_server == nil || server.connections.Load() < least_conn_server.connections.Load() {
-						least_conn_server = server
-					}
-				}
+		if least_conn_server != nil {
+			least_conn_server.connections.Add(1)
+			least_conn_server.drain.Add(1)
+			return least_conn_server, nil
+		}
+
+		return nil, fmt.Errorf("no healthy backend available")
+
+	case ConsistentHash:
+		client_ip := strings.Split(r.RemoteAddr, ":")[0]
+		hash := fnv.New32a()
+
+		hash.Write([]byte(client_ip))
+
+		server_index := sort.Search(len(bm.hashRing.RingPositions), func(i int) bool {
+			return bm.hashRing.RingPositions[uint32(i)] >= uint32(hash.Sum32())
+		})
+
+		if server_index == len(bm.hashRing.RingPositions) {
+			server_index = 0
+		}
+
+		for i := 0; i < len(bm.hashRing.RingPositions); i++ {
+			server := bm.hashRing.PositionMap[bm.hashRing.RingPositions[server_index]]
+			if server.healthy.Load() {
+				server.connections.Add(1)
+				server.drain.Add(1)
+				return server, nil
 			}
 
-			if least_conn_server != nil {
-				least_conn_server.connections.Add(1)
-				least_conn_server.drain.Add(1)
-				return least_conn_server, nil
-			}
+			server_index = (server_index + 1) % len(bm.hashRing.RingPositions)
+		}
 
-			return nil, fmt.Errorf("no healthy backend available")
+		return nil, fmt.Errorf("no healthy backend available")
 
-		case ConsistentHash:
-			client_ip := strings.Split(r.RemoteAddr, ":")[0]
-			hash := fnv.New32a()
-			
-			hash.Write([]byte(client_ip))
-
-			server_index := sort.Search(len(bm.hashRing.RingPositions), func(i int) bool {
-				return bm.hashRing.RingPositions[uint32(i)] >= uint32(hash.Sum32())
-			})
-
-			if server_index == len(bm.hashRing.RingPositions) {
-				server_index = 0
-			}
-
-			for i := 0; i < len(bm.hashRing.RingPositions); i++ {
-				server := bm.hashRing.PositionMap[bm.hashRing.RingPositions[server_index]]
-				if server.healthy.Load() {
-					server.connections.Add(1)
-					server.drain.Add(1)
-					return server, nil
-				}
-
-				server_index = (server_index + 1) % len(bm.hashRing.RingPositions)
-			}
-
-			return nil, fmt.Errorf("no healthy backend available")
-
-		default:
-			return nil, fmt.Errorf("invalid load balancing strategy")
+	default:
+		return nil, fmt.Errorf("invalid load balancing strategy")
 	}
 
 }
