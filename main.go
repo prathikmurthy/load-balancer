@@ -27,6 +27,7 @@ func server(backendManager *BackendManager) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		defer server.connections.Add(-1)
 
 		resp, err := server.ForwardRequest(r)
 		if err != nil {
@@ -49,6 +50,8 @@ func server(backendManager *BackendManager) http.HandlerFunc {
 			return
 		}
 
+		
+
 	}
 }
 
@@ -58,7 +61,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	backendManager := NewBackendManager(ctx)
+	backendManager := NewBackendManager(ctx, RoundRobin)
 	backendManager.AddBackend("http://localhost:9001")
 	backendManager.AddBackend("http://localhost:9002")
 	backendManager.AddBackend("http://localhost:9003")

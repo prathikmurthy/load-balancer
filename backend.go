@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"net/http"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -21,10 +23,17 @@ var HBH_HEADERS = []string{
 	"Upgrade",
 }
 
+type ConsistentHashRing struct {
+	RingPositions []uint32
+	PositionMap map[uint32]*Server
+	VirtualNodeCount uint8
+}
+
 type Server struct {
 	URL     string
 	client  *http.Client
 	healthy *atomic.Bool
+	connections atomic.Int32
 }
 
 func (bs *Server) CheckHealth() bool {
@@ -58,7 +67,7 @@ func HealthCheckLoop(ctx context.Context, bs *Server) {
 	}
 }
 
-func (bs Server) ForwardRequest(r *http.Request) (*http.Response, error) {
+func (bs *Server) ForwardRequest(r *http.Request) (*http.Response, error) {
 
 	route := r.URL.Path
 	params := r.URL.Query().Encode()
@@ -90,13 +99,27 @@ func (bs Server) ForwardRequest(r *http.Request) (*http.Response, error) {
 
 type BackendManager struct {
 	servers []*Server
-	current atomic.Int32
+	current atomic.Int32 // idx for round robin
 	ctx    context.Context
+	strategy BackendManagerStrategy
+	hashRing *ConsistentHashRing
 }
 
-func NewBackendManager(ctx context.Context) *BackendManager { // constructor
+type BackendManagerStrategy int
+
+const (
+	RoundRobin BackendManagerStrategy = iota
+	LeastConnections
+	ConsistentHash
+)
+
+func NewBackendManager(ctx context.Context, strategy BackendManagerStrategy) *BackendManager { // constructor
 	bm := BackendManager{
 		ctx: ctx,
+		strategy: strategy,
+		hashRing: &ConsistentHashRing{
+			VirtualNodeCount: 5,
+		},
 	}
 	return &bm
 }
@@ -111,18 +134,83 @@ func (bm *BackendManager) AddBackend(url string) {
 	go HealthCheckLoop(bm.ctx, new_server)
 	
 	bm.servers = append(bm.servers, new_server)
+
+	if bm.strategy == ConsistentHash {
+		// virtual nodes
+		for i := 0; i < int(bm.hashRing.VirtualNodeCount); i++ {
+			virtual_node_id := fmt.Sprintf("%s#%d", url, i)
+			hash := fnv.New32a()
+			hash.Write([]byte(virtual_node_id))
+			bm.hashRing.RingPositions = append(bm.hashRing.RingPositions, hash.Sum32())
+			bm.hashRing.PositionMap[hash.Sum32()] = new_server
+		}
+
+		sort.Slice(bm.hashRing.RingPositions, func(i, j int) bool {
+			return bm.hashRing.RingPositions[i] < bm.hashRing.RingPositions[j]
+		})
+	}
 }
 
 func (bm *BackendManager) getBackend(r *http.Request) (*Server, error) {
 	// idx := bm.current.Add(1) % int32(len(bm.servers))
 
-	for idx := 0; idx < len(bm.servers); idx++ {
-		server := bm.servers[bm.current.Add(1) % int32(len(bm.servers))]
+	switch bm.strategy {
+		case RoundRobin:
+			for idx := 0; idx < len(bm.servers); idx++ {
+				server := bm.servers[bm.current.Add(1) % int32(len(bm.servers))]
+		
+				if server.healthy.Load() {
+					server.connections.Add(1)
+					return server, nil
+				}
+			}
+		
+			return nil, fmt.Errorf("no healthy backend available")
 
-		if server.healthy.Load() {
-			return server, nil
-		}
+		case LeastConnections:
+			var least_conn_server *Server
+			for _, server := range bm.servers {
+				if server.healthy.Load() {
+					if least_conn_server == nil || server.connections.Load() < least_conn_server.connections.Load() {
+						least_conn_server = server
+					}
+				}
+			}
+
+			if least_conn_server != nil {
+				least_conn_server.connections.Add(1)
+				return least_conn_server, nil
+			}
+
+			return nil, fmt.Errorf("no healthy backend available")
+
+		case ConsistentHash:
+			client_ip := strings.Split(r.RemoteAddr, ":")[0]
+			hash := fnv.New32a()
+			
+			hash.Write([]byte(client_ip))
+
+			server_index := sort.Search(len(bm.hashRing.RingPositions), func(i int) bool {
+				return bm.hashRing.RingPositions[uint32(i)] >= uint32(hash.Sum32())
+			})
+
+			if server_index == len(bm.hashRing.RingPositions) {
+				server_index = 0
+			}
+
+			for i := 0; i < len(bm.hashRing.RingPositions); i++ {
+				server := bm.hashRing.PositionMap[bm.hashRing.RingPositions[server_index]]
+				if server.healthy.Load() {
+					return server, nil
+				}
+
+				server_index = (server_index + 1) % len(bm.hashRing.RingPositions)
+			}
+
+			return nil, fmt.Errorf("no healthy backend available")
+
+		default:
+			return nil, fmt.Errorf("invalid load balancing strategy")
 	}
 
-	return nil, fmt.Errorf("no healthy backend available")
 }
