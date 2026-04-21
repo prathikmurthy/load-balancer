@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -34,6 +35,7 @@ type Server struct {
 	client  *http.Client
 	healthy *atomic.Bool
 	connections atomic.Int32
+	drain sync.WaitGroup
 }
 
 func (bs *Server) CheckHealth() bool {
@@ -124,6 +126,16 @@ func NewBackendManager(ctx context.Context, strategy BackendManagerStrategy) *Ba
 	return &bm
 }
 
+func (bm *BackendManager) Shutdown() {
+	for _, server := range bm.servers {
+		server.healthy.Store(false)
+	}
+
+	for _, server := range bm.servers {
+		server.drain.Wait()
+	}
+}
+
 func (bm *BackendManager) AddBackend(url string) {
 	new_server := &Server{
 		URL:    url,
@@ -161,6 +173,7 @@ func (bm *BackendManager) getBackend(r *http.Request) (*Server, error) {
 		
 				if server.healthy.Load() {
 					server.connections.Add(1)
+					server.drain.Add(1)
 					return server, nil
 				}
 			}
@@ -179,6 +192,7 @@ func (bm *BackendManager) getBackend(r *http.Request) (*Server, error) {
 
 			if least_conn_server != nil {
 				least_conn_server.connections.Add(1)
+				least_conn_server.drain.Add(1)
 				return least_conn_server, nil
 			}
 
@@ -201,6 +215,8 @@ func (bm *BackendManager) getBackend(r *http.Request) (*Server, error) {
 			for i := 0; i < len(bm.hashRing.RingPositions); i++ {
 				server := bm.hashRing.PositionMap[bm.hashRing.RingPositions[server_index]]
 				if server.healthy.Load() {
+					server.connections.Add(1)
+					server.drain.Add(1)
 					return server, nil
 				}
 

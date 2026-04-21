@@ -6,6 +6,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 type Response struct {
@@ -28,6 +32,7 @@ func server(backendManager *BackendManager) http.HandlerFunc {
 			return
 		}
 		defer server.connections.Add(-1)
+		defer server.drain.Done()
 
 		resp, err := server.ForwardRequest(r)
 		if err != nil {
@@ -58,10 +63,27 @@ func server(backendManager *BackendManager) http.HandlerFunc {
 
 func main() {
 
+	http_server := &http.Server{
+		Addr: ":8080",
+	}
+	
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
+	
 	backendManager := NewBackendManager(ctx, RoundRobin)
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, os.Interrupt)
+	go func() {
+		<-sigs
+		log.Println("Shutting down gracefully...")
+		timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer timeoutCancel()
+		http_server.Shutdown(timeoutCtx)
+		backendManager.Shutdown()
+		os.Exit(0)
+	} ()
+
 	backendManager.AddBackend("http://localhost:9001")
 	backendManager.AddBackend("http://localhost:9002")
 	backendManager.AddBackend("http://localhost:9003")
@@ -69,8 +91,8 @@ func main() {
 	http.HandleFunc("/ping", ping)
 	http.HandleFunc("/", server(backendManager))
 
-	err := http.ListenAndServe(":8080", nil)
-	if err != nil {
+	err := http_server.ListenAndServe()
+	if err != nil && err != http.ErrServerClosed {
 		panic(err)
 	}
 }
