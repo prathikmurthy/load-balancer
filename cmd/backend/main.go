@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 )
 
 func main() {
@@ -21,6 +22,18 @@ func main() {
 			"port":   *port,
 			"method": r.Method,
 			"path":   r.URL.Path,
+		})
+	})
+
+	http.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("Received slow request: %s %s", r.Method, r.URL.Path)
+		time.Sleep(5 * time.Second)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"port":   *port,
+			"method": r.Method,
+			"path":   r.URL.Path,
+			"slow":   true,
 		})
 	})
 

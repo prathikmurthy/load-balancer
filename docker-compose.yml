@@ -1,0 +1,28 @@
+services:
+  backend1:
+    build: .
+    command: ./backend -port 9001
+    expose:
+      - "9001"
+
+  backend2:
+    build: .
+    command: ./backend -port 9002
+    expose:
+      - "9002"
+
+  backend3:
+    build: .
+    command: ./backend -port 9003
+    expose:
+      - "9003"
+
+  lb:
+    build: .
+    command: ./lb http://backend1:9001 http://backend2:9002 http://backend3:9003
+    ports:
+      - "8080:8080"
+    depends_on:
+      - backend1
+      - backend2
+      - backend3

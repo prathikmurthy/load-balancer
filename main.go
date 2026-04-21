@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"io"
 	"log"
 	"net/http"
@@ -55,22 +56,20 @@ func server(backendManager *BackendManager) http.HandlerFunc {
 			return
 		}
 
-		
-
 	}
 }
 
-
 func main() {
+	flag.Parse()
 
 	http_server := &http.Server{
 		Addr: ":8080",
 	}
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
-	backendManager := NewBackendManager(ctx, RoundRobin)
+
+	backendManager := NewBackendManager(ctx, LeastConnections)
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, os.Interrupt)
@@ -82,11 +81,15 @@ func main() {
 		http_server.Shutdown(timeoutCtx)
 		backendManager.Shutdown()
 		os.Exit(0)
-	} ()
+	}()
 
-	backendManager.AddBackend("http://localhost:9001")
-	backendManager.AddBackend("http://localhost:9002")
-	backendManager.AddBackend("http://localhost:9003")
+	backends := flag.Args()
+	if len(backends) == 0 {
+		backends = []string{"http://localhost:9001", "http://localhost:9002", "http://localhost:9003"}
+	}
+	for _, b := range backends {
+		backendManager.AddBackend(b)
+	}
 
 	http.HandleFunc("/ping", ping)
 	http.HandleFunc("/", server(backendManager))
