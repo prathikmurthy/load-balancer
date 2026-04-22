@@ -1,8 +1,10 @@
-An HTTP reverse proxy and load balancer written in Go.
+An HTTP reverse proxy and layer-7 load balancer written in Go.
+
+![Grafana Dashboard](grafana.png)
 
 ## Features
 
-- **Three routing strategies** (compile-time switch in `main.go`):
+- **Three routing strategies**:
   - `RoundRobin` — cycles through backends in order
   - `LeastConnections` — routes to the backend with the fewest active connections
   - `ConsistentHash` — routes a given client IP to the same backend via a virtual-node hash ring
@@ -35,8 +37,6 @@ Starts the load balancer on `:8080` and three backend instances on ports 9001–
 ## Observability
 
 The load balancer exposes an OpenTelemetry metrics endpoint at `http://localhost:8080/metrics` in Prometheus format.
-
-![Grafana Dashboard](grafana.png)
 
 | Metric | Type | Description |
 |---|---|---|
