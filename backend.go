@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -106,21 +107,61 @@ type OTelInstrumentation struct {
 	requestDuration     metric.Float64Histogram
 }
 
-func NewOTelInstrumentation() *OTelInstrumentation {
+func NewOTelInstrumentation(servers *[]*Server) *OTelInstrumentation {
 	meter := otel.GetMeterProvider().Meter("backend_manager")
 
 	totalRequests, err := meter.Int64Counter("total_requests")
 	if err != nil {
 		panic(err)
 	}
+
+	totalRequests.Add(context.Background(), 1)
+	totalRequests.Add(context.Background(), -1)
+
 	totalFailedRequests, err := meter.Int64Counter("total_failed_requests")
 	if err != nil {
 		panic(err)
 	}
+
+	totalFailedRequests.Add(context.Background(), 1)
+	totalFailedRequests.Add(context.Background(), -1)
+	
 	requestDuration, err := meter.Float64Histogram(
 		"request_duration_ms",
 		metric.WithDescription("Duration of successfully forwarded requests in milliseconds"),
 		metric.WithUnit("ms"),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = meter.Int64ObservableGauge(
+		"backend_active_connections",
+		metric.WithDescription("Number of active connections per backend"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			for _, s := range *servers {
+				o.Observe(int64(s.connections.Load()), metric.WithAttributes(attribute.String("backend", s.URL)))
+			}
+			return nil
+		}),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = meter.Int64ObservableGauge(
+		"backend_health",
+		metric.WithDescription("Health status per backend (1=healthy, 0=unhealthy)"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			for _, s := range *servers {
+				val := int64(0)
+				if s.healthy.Load() {
+					val = 1
+				}
+				o.Observe(val, metric.WithAttributes(attribute.String("backend", s.URL)))
+			}
+			return nil
+		}),
 	)
 	if err != nil {
 		panic(err)
@@ -158,8 +199,8 @@ func NewBackendManager(ctx context.Context, strategy BackendManagerStrategy) *Ba
 		hashRing: &ConsistentHashRing{
 			VirtualNodeCount: 5,
 		},
-		instrumentation: NewOTelInstrumentation(),
 	}
+	bm.instrumentation = NewOTelInstrumentation(&bm.servers)
 
 	return &bm
 }
