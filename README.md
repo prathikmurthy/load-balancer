@@ -36,6 +36,8 @@ Starts the load balancer on `:8080` and three backend instances on ports 9001–
 
 The load balancer exposes an OpenTelemetry metrics endpoint at `http://localhost:8080/metrics` in Prometheus format.
 
+![Grafana Dashboard](grafana.png)
+
 | Metric | Type | Description |
 |---|---|---|
 | `total_requests` | Counter | Total requests received by the load balancer |
